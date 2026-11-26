@@ -1,0 +1,41 @@
+name: Catalogue TMDB
+
+on:
+  workflow_dispatch:
+    inputs:
+      films:
+        description: "Nombre de films"
+        default: "5000"
+      series:
+        description: "Nombre de séries"
+        default: "2000"
+  schedule:
+    - cron: "0 4 1 * *"   # le 1er de chaque mois, 4 h UTC
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Récupérer le catalogue
+        env:
+          TMDB_KEY: ${{ secrets.TMDB_KEY }}
+          FILMS: ${{ github.event.inputs.films || '5000' }}
+          SERIES: ${{ github.event.inputs.series || '2000' }}
+        run: |
+          rm -rf data && mkdir -p data
+          python fetch_tmdb.py --films "$FILMS" --series "$SERIES" --out data
+      - name: Enregistrer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          git commit -m "Catalogue TMDB du $(date +%Y-%m-%d)" || echo "Rien de nouveau"
+          git push
