@@ -8,7 +8,7 @@ Sortie :
 Uniquement la bibliothèque standard Python 3.8+.
 Ce produit utilise l'API TMDB mais n'est ni approuvé ni certifié par TMDB.
 """
-import argparse, base64, json, os, sys, time, threading, urllib.parse, urllib.request
+import argparse, base64, json, math, os, re, sys, time, threading, unicodedata, urllib.parse, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 API = "https://api.themoviedb.org/3"
@@ -126,12 +126,43 @@ def poster(path):
             time.sleep(1 + essai)
     return None
 
+def norm(x):
+    return re.sub(r"[^a-z0-9]", "", unicodedata.normalize("NFD", (x or "").lower()).encode("ascii", "ignore").decode())
+
+def search_extra(e):
+    """Titres ajoutés à la main (extras.json) : ceux du hub et ceux qu'Owen a aimés, même hors abonnement."""
+    kind = "movie" if e.get("type", "film") == "film" else "tv"
+    d = get(f"/search/{kind}", query=e["q"], language="en-US", include_adult="false")
+    q, an, res = norm(e["q"]), e.get("annee"), []
+    for r in (d or {}).get("results", []):
+        noms = [norm(r.get(k)) for k in ("title", "original_title", "name", "original_name")]
+        if not any(n and (q in n or n in q) for n in noms): continue
+        y = (r.get("release_date") or r.get("first_air_date") or "")[:4]
+        if an and (not y.isdigit() or abs(int(y) - an) > 1): continue
+        res.append(r)
+    res.sort(key=lambda r: r.get("vote_count") or 0, reverse=True)
+    return [(kind, r["id"]) for r in res[: e.get("n", 1)]]
+
+def extras(path, deja):
+    if not path or not os.path.exists(path): return []
+    with open(path, encoding="utf-8") as f: liste = json.load(f)
+    with ThreadPoolExecutor(8) as ex: trouves = [x for xs in ex.map(search_extra, liste) for x in xs]
+    vus, todo = set(deja), []
+    for kind, i in trouves:
+        k = f"{'f' if kind == 'movie' else 's'}{i}"
+        if k not in vus: vus.add(k); todo.append((kind, i))
+    print(f"Extras : {len(trouves)} trouvés, {len(todo)} nouveaux", flush=True)
+    with ThreadPoolExecutor(8) as ex: return [r for r in ex.map(lambda x: detail(*x), todo) if r]
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--films", type=int, default=4000)
     ap.add_argument("--series", type=int, default=1500)
     ap.add_argument("--out", default="./hub-films-data")
+    ap.add_argument("--extras", default="extras.json")
+    ap.add_argument("--extras-only", action="store_true", help="ajoute seulement les extras au catalogue existant")
     a = ap.parse_args()
+    if a.extras_only: return extras_only(a)
     os.makedirs(os.path.join(a.out, "posters"), exist_ok=True)
     out = []
     for kind, n in (("movie", a.films), ("tv", a.series)):
@@ -142,6 +173,7 @@ def main():
             for k, r in enumerate(ex.map(lambda i: detail(kind, i), ids)):
                 if r: out.append(r)
                 if k % 250 == 0: print(f"  {k}/{len(ids)}", flush=True)
+    out += extras(a.extras, [r["id"] for r in out])
     # popularité 0-100 = rang (films et séries ensemble, pondéré par le nombre de votes)
     out.sort(key=lambda r: r["votes"] * 0.6 + r["pop_raw"] * 40, reverse=True)
     N = len(out)
@@ -161,6 +193,26 @@ def main():
     with open(os.path.join(a.out, "catalogue.json"), "w", encoding="utf-8") as f:
         f.write("[\n" + ",\n".join(json.dumps(r, ensure_ascii=False) for r in out) + "\n]\n")
     print(f"Terminé : {N} titres, {len(chunks)} fichiers d'affiches dans {a.out}", flush=True)
+
+def extras_only(a):
+    cat_path = os.path.join(a.out, "catalogue.json")
+    with open(cat_path, encoding="utf-8") as f: cat = json.load(f)
+    new = extras(a.extras, [r["id"] for r in cat])
+    c0 = max([r.get("chunk", 0) for r in cat] + [-1]) + 1
+    chunks = {}
+    with ThreadPoolExecutor(12) as ex: imgs = list(ex.map(lambda r: poster(r["poster_path"]), new))
+    for k, (r, im) in enumerate(zip(new, imgs)):
+        r["popularite"] = max(5, min(95, round(25 * math.log10((r["votes"] or 0) + 1))))
+        r["chunk"] = c0 + k // 50
+        r["poster"] = bool(im)
+        if im: chunks.setdefault(r["chunk"], {})[r["id"]] = im
+        for x in ("poster_path", "pop_raw", "votes"): r.pop(x, None)
+    for c, data in chunks.items():
+        with open(os.path.join(a.out, "posters", f"p-{c:03d}.json"), "w") as f: json.dump(data, f)
+    cat += new
+    with open(cat_path, "w", encoding="utf-8") as f:
+        f.write("[\n" + ",\n".join(json.dumps(r, ensure_ascii=False) for r in cat) + "\n]\n")
+    print(f"Extras ajoutés : {len(new)} titres, {len(chunks)} fichiers d'affiches", flush=True)
 
 if __name__ == "__main__":
     main()

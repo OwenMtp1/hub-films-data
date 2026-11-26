@@ -9,6 +9,10 @@ on:
       series:
         description: "Nombre de séries"
         default: "2000"
+      extras_only:
+        description: "Ajouter seulement les titres de extras.json (rapide)"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 4 1 * *"   # le 1er de chaque mois, 4 h UTC
 
@@ -29,9 +33,14 @@ jobs:
           TMDB_KEY: ${{ secrets.TMDB_KEY }}
           FILMS: ${{ github.event.inputs.films || '5000' }}
           SERIES: ${{ github.event.inputs.series || '2000' }}
+          EXTRAS_ONLY: ${{ github.event.inputs.extras_only || 'false' }}
         run: |
-          rm -rf data && mkdir -p data
-          python fetch_tmdb.py --films "$FILMS" --series "$SERIES" --out data
+          if [ "$EXTRAS_ONLY" = "true" ]; then
+            python fetch_tmdb.py --extras-only --extras extras.json --out data
+          else
+            rm -rf data && mkdir -p data
+            python fetch_tmdb.py --films "$FILMS" --series "$SERIES" --extras extras.json --out data
+          fi
       - name: Enregistrer
         run: |
           git config user.name "github-actions[bot]"
