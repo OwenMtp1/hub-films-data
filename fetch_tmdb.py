@@ -58,17 +58,18 @@ def plat_name(n):
         if any(k in n for k in keys) and "channel" not in n: return nom
     return None
 
-def discover(kind, cible):
-    ids, page = [], 1
-    params = dict(language="fr-FR", watch_region="FR", with_watch_monetization_types="flatrate|free|ads",
-                  sort_by="popularity.desc", include_adult="false")
-    params["vote_count.gte"] = 30 if kind == "movie" else 15
+def discover(kind, cible, monet="flatrate|free|ads", tri="popularity.desc", vmin=None, exclure=()):
+    ids, page, vus = [], 1, set(exclure)
+    params = dict(language="fr-FR", watch_region="FR", with_watch_monetization_types=monet,
+                  sort_by=tri, include_adult="false")
+    params["vote_count.gte"] = vmin or (30 if kind == "movie" else 15)
     while len(ids) < cible and page <= 500:
         d = get(f"/discover/{kind}", page=page, **params)
         if not d or not d.get("results"): break
         for r in d["results"]:
             if kind == "tv" and EXCLU_TV & set(r.get("genre_ids", [])): continue
-            ids.append(r["id"])
+            if r["id"] in vus: continue
+            vus.add(r["id"]); ids.append(r["id"])
         page += 1
         if page % 25 == 0: print(f"  {kind}: {len(ids)} ids…", flush=True)
     return ids[:cible]
@@ -83,6 +84,7 @@ def detail(kind, i):
         for p in fr.get(key, []) or []:
             n = plat_name(p.get("provider_name", ""))
             if n and n not in plats: plats.append(n)
+    vod = bool(fr.get("rent") or fr.get("buy"))
     genres = []
     for g in d.get("genres", []):
         for x in GENRES.get(g["id"], []):
@@ -111,7 +113,7 @@ def detail(kind, i):
         titre, orig = d.get("name"), d.get("original_name")
     return {"id": f"{'f' if kind == 'movie' else 's'}{i}", "tmdb": i, "titre": titre, "original": orig or "",
             "type": "film" if kind == "movie" else "serie", "annee": int(an) if an.isdigit() else None,
-            "genres": genres[:3], "tags": tags[:5], "plateformes": plats[:4], "duree": duree,
+            "genres": genres[:3], "tags": tags[:5], "plateformes": plats[:4], "duree": duree, "vod": vod,
             "note": round(d.get("vote_average") or 0, 1) or None, "votes": d.get("vote_count") or 0,
             "pop_raw": d.get("popularity") or 0, "realisateur": real, "description": d.get("overview", "")[:600],
             "poster_path": d.get("poster_path") or ""}
@@ -143,6 +145,18 @@ def search_extra(e):
     res.sort(key=lambda r: r.get("vote_count") or 0, reverse=True)
     return [(kind, r["id"]) for r in res[: e.get("n", 1)]]
 
+def location(nf, ns, deja):
+    """Titres en location / achat (VOD) en France, les mieux connus, absents du catalogue abonnement."""
+    out = []
+    for kind, n in (("movie", nf), ("tv", ns)):
+        if n <= 0: continue
+        print(f"Location {kind}…", flush=True)
+        ids = discover(kind, n, monet="rent|buy", tri="vote_count.desc", vmin=150 if kind == "movie" else 80, exclure={int(x[1:]) for x in deja if x[0] == ("f" if kind == "movie" else "s")})
+        with ThreadPoolExecutor(8) as pool:
+            out += [r for r in pool.map(lambda i: detail(kind, i), ids) if r]
+    print(f"Location : {len(out)} titres", flush=True)
+    return out
+
 def extras(path, deja):
     if not path or not os.path.exists(path): return []
     with open(path, encoding="utf-8") as f: liste = json.load(f)
@@ -160,7 +174,9 @@ def main():
     ap.add_argument("--series", type=int, default=1500)
     ap.add_argument("--out", default="./hub-films-data")
     ap.add_argument("--extras", default="extras.json")
-    ap.add_argument("--extras-only", action="store_true", help="ajoute seulement les extras au catalogue existant")
+    ap.add_argument("--extras-only", action="store_true", help="ajoute seulement extras + location au catalogue existant")
+    ap.add_argument("--rent-films", type=int, default=0)
+    ap.add_argument("--rent-series", type=int, default=0)
     a = ap.parse_args()
     if a.extras_only: return extras_only(a)
     os.makedirs(os.path.join(a.out, "posters"), exist_ok=True)
@@ -173,7 +189,9 @@ def main():
             for k, r in enumerate(ex.map(lambda i: detail(kind, i), ids)):
                 if r: out.append(r)
                 if k % 250 == 0: print(f"  {k}/{len(ids)}", flush=True)
+    out += location(a.rent_films, a.rent_series, [r["id"] for r in out])
     out += extras(a.extras, [r["id"] for r in out])
+    seen = set(); out = [r for r in out if not (r["id"] in seen or seen.add(r["id"]))]
     # popularité 0-100 = rang (films et séries ensemble, pondéré par le nombre de votes)
     out.sort(key=lambda r: r["votes"] * 0.6 + r["pop_raw"] * 40, reverse=True)
     N = len(out)
@@ -197,7 +215,10 @@ def main():
 def extras_only(a):
     cat_path = os.path.join(a.out, "catalogue.json")
     with open(cat_path, encoding="utf-8") as f: cat = json.load(f)
-    new = extras(a.extras, [r["id"] for r in cat])
+    seen = set(); cat = [r for r in cat if not (r["id"] in seen or seen.add(r["id"]))]
+    new = location(a.rent_films, a.rent_series, [r["id"] for r in cat])
+    new += extras(a.extras, [r["id"] for r in cat + new])
+    new.sort(key=lambda r: r["votes"], reverse=True)
     c0 = max([r.get("chunk", 0) for r in cat] + [-1]) + 1
     chunks = {}
     with ThreadPoolExecutor(12) as ex: imgs = list(ex.map(lambda r: poster(r["poster_path"]), new))

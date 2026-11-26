@@ -9,6 +9,12 @@ on:
       series:
         description: "Nombre de séries"
         default: "2000"
+      rent_films:
+        description: "Films en location/achat en plus"
+        default: "3000"
+      rent_series:
+        description: "Séries en location/achat en plus"
+        default: "500"
       extras_only:
         description: "Ajouter seulement les titres de extras.json (rapide)"
         type: boolean
@@ -33,13 +39,15 @@ jobs:
           TMDB_KEY: ${{ secrets.TMDB_KEY }}
           FILMS: ${{ github.event.inputs.films || '5000' }}
           SERIES: ${{ github.event.inputs.series || '2000' }}
+          RENT_F: ${{ github.event.inputs.rent_films || '3000' }}
+          RENT_S: ${{ github.event.inputs.rent_series || '500' }}
           EXTRAS_ONLY: ${{ github.event.inputs.extras_only || 'false' }}
         run: |
           if [ "$EXTRAS_ONLY" = "true" ]; then
-            python fetch_tmdb.py --extras-only --extras extras.json --out data
+            python fetch_tmdb.py --extras-only --rent-films "$RENT_F" --rent-series "$RENT_S" --extras extras.json --out data
           else
             rm -rf data && mkdir -p data
-            python fetch_tmdb.py --films "$FILMS" --series "$SERIES" --extras extras.json --out data
+            python fetch_tmdb.py --films "$FILMS" --series "$SERIES" --rent-films "$RENT_F" --rent-series "$RENT_S" --extras extras.json --out data
           fi
       - name: Enregistrer
         run: |
